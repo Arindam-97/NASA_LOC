@@ -1,0 +1,36 @@
+# Virtual environments
+NASA_LOC_env/
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Data files (optional)
+# Uncomment if data should NOT be tracked
+# data/
+
+# Environment variables
+.env
+
+# Build/distribution
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
