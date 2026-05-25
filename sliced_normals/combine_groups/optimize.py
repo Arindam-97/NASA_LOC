@@ -188,3 +188,172 @@ def estimate_optimal_P12_reparam(
     best_details["restart_summaries"] = restart_summaries
 
     return best_P12, best_details
+
+
+
+
+
+# -----------------------------------------------------------
+# 3.  High-level wrapper that builds the full B-matrix
+#     (updated for the NEW centered formulation)
+# -----------------------------------------------------------
+def combine_B_blocks_reparam(B1, B2,
+                             data1, data2,
+                             degree=2, n_grid=10000,
+                             verbosity=2, max_iterations=1000,
+                             min_gradient_norm=1e-4,
+                             winsor_threshold=1e-10,
+                             n_restarts=1,
+                             return_details=False):
+    """
+    Combines two fitted block matrices B1, B2 by optimizing the cross-block P12
+    using the NEW reparameterized objective (centered formulation).
+
+    Returns
+    -------
+    mu : ndarray
+        Combined mean vector [mu1, mu2].
+    P : ndarray
+        Combined precision matrix [[P11, P12], [P12^T, P22]].
+    (optional) details : dict
+        Diagnostics from estimate_optimal_P12_reparam if return_details=True.
+    """
+
+    # ----- 3.1  Extract block pieces from the two FMLE blocks -----
+    p1 = B1.shape[0] - 1
+    p2 = B2.shape[0] - 1
+
+    # Precision blocks from B
+    P11 = 2.0 * B1[1:1 + p1, 1:1 + p1]
+    P22 = 2.0 * B2[1:1 + p2, 1:1 + p2]
+
+    P11_inv = inv(P11)
+    P22_inv = inv(P22)
+
+    # Means implied by B blocks
+    mu1 = -2.0 * B1[0, 1:1 + p1] @ P11_inv
+    mu2 = -2.0 * B2[0, 1:1 + p2] @ P22_inv
+    mu = np.concatenate([mu1, mu2])
+
+    # ----- 3.2  Feature matrices & integration grids -------------
+    if not isinstance(data1, pd.DataFrame):
+        data1 = pd.DataFrame(data1, columns=[f"X1_{i}" for i in range(data1.shape[1])])
+    if not isinstance(data2, pd.DataFrame):
+        data2 = pd.DataFrame(data2, columns=[f"X2_{i}" for i in range(data2.shape[1])])
+
+    Z1_df, Z1g_df, vol1 = get_F_and_Random_Samples(data1, degree, n_grid)
+    Z2_df, Z2g_df, vol2 = get_F_and_Random_Samples(data2, degree, n_grid)
+
+    # Keep feature columns only (drop intercept column)
+    Z1  = np.asarray(Z1_df.iloc[:, 1:], dtype=np.float64)
+    Z2  = np.asarray(Z2_df.iloc[:, 1:], dtype=np.float64)
+    Z1g = np.asarray(Z1g_df.iloc[:, 1:], dtype=np.float64)
+    Z2g = np.asarray(Z2g_df.iloc[:, 1:], dtype=np.float64)
+
+    volume = float(vol1 * vol2)
+
+    # ----- 3.3  Center features for the NEW formulation ----------
+    # Optimizer now expects Y = Z - mu
+    if Z1.shape[1] != mu1.shape[0]:
+        raise ValueError(
+            f"Dimension mismatch: feature dim for block 1 is {Z1.shape[1]}, "
+            f"but mu1 has length {mu1.shape[0]}."
+        )
+    if Z2.shape[1] != mu2.shape[0]:
+        raise ValueError(
+            f"Dimension mismatch: feature dim for block 2 is {Z2.shape[1]}, "
+            f"but mu2 has length {mu2.shape[0]}."
+        )
+
+    Y1  = Z1  - mu1
+    Y2  = Z2  - mu2
+    Y1g = Z1g - mu1
+    Y2g = Z2g - mu2
+
+    # ----- 3.4  Optimise U  ->  get P12 --------------------------
+    if return_details:
+        P12_opt, opt_details = estimate_optimal_P12_reparam(
+            Y1, Y2, Y1g, Y2g, volume,
+            P11, P22,
+            verbosity=verbosity,
+            max_iterations=max_iterations,
+            min_gradient_norm=min_gradient_norm,
+            winsor_threshold=winsor_threshold,
+            n_restarts=n_restarts,
+            return_details=True
+        )
+    else:
+        P12_opt = estimate_optimal_P12_reparam(
+            Y1, Y2, Y1g, Y2g, volume,
+            P11, P22,
+            verbosity=verbosity,
+            max_iterations=max_iterations,
+            min_gradient_norm=min_gradient_norm,
+            winsor_threshold=winsor_threshold,
+            n_restarts=n_restarts,
+            return_details=False
+        )
+
+    # ----- 3.5  Assemble the full precision block ----------------
+    P = np.block([
+        [P11,       P12_opt],
+        [P12_opt.T, P22    ]
+    ])
+
+    if return_details:
+        details = {
+            "mu1": mu1,
+            "mu2": mu2,
+            "mu": mu,
+            "P11": P11,
+            "P22": P22,
+            "P12_opt": P12_opt,
+            "volume": volume,
+            "vol1": float(vol1),
+            "vol2": float(vol2),
+            "opt_details": opt_details
+        }
+        return mu, P, details
+
+    return mu, P
+
+def combine_B_blocks_indep(B1, B2,
+                             data1, data2,
+                             degree=2, n_grid=10000,
+                             verbosity=2, max_iterations=1000,
+                             min_gradient_norm=1e-4,
+                             winsor_threshold=1e-10):
+
+    # ----- 3.1  Extract block pieces from the two FMLE blocks -----
+    p1 = B1.shape[0] - 1
+    p2 = B2.shape[0] - 1
+
+    P11 = 2 * B1[1:1 + p1, 1:1 + p1]
+    P22 = 2 * B2[1:1 + p2, 1:1 + p2]
+    P11_inv = inv(P11)
+    P22_inv = inv(P22)
+
+    mu1 = -2 * B1[0, 1:1 + p1] @ P11_inv
+    mu2 = -2 * B2[0, 1:1 + p2] @ P22_inv
+    mu  = np.concatenate([mu1, mu2])
+
+    # ----- 3.2  Feature matrices & integration grids -------------
+    if not isinstance(data1, pd.DataFrame):
+        data1 = pd.DataFrame(data1, columns=[f"X1_{i}" for i in range(data1.shape[1])])
+    if not isinstance(data2, pd.DataFrame):
+        data2 = pd.DataFrame(data2, columns=[f"X2_{i}" for i in range(data2.shape[1])])
+
+    Z1_df, _, _ = get_F_and_Random_Samples(data1, degree, n_grid)
+    Z2_df, _, _ = get_F_and_Random_Samples(data2, degree, n_grid)
+
+    Z1   = np.asarray(Z1_df.iloc[:, 1:], dtype=np.float64)
+    Z2   = np.asarray(Z2_df.iloc[:, 1:], dtype=np.float64)
+
+    _, d1 = Z1.shape
+    _, d2 = Z2.shape
+    P12_opt = np.zeros((d1,d2))
+    # ----- 3.4  Assemble the full precision block ----------------
+    P = np.block([[P11,        P12_opt],
+                  [P12_opt.T,  P22     ]])
+
+    return mu, P
